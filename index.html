@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anonymous Voting System</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔒 Anonymous Voting System</h1>
+            <p>Zero-knowledge inspired voting for private elections</p>
+        </header>
+
+        <nav class="tab-nav">
+            <button class="tab-btn active" data-tab="vote">Vote</button>
+            <button class="tab-btn" data-tab="create">Create Poll</button>
+            <button class="tab-btn" data-tab="results">Results</button>
+            <button class="tab-btn" data-tab="register">Register</button>
+        </nav>
+
+        <div class="wallet-section">
+            <div class="wallet-info">
+                <span id="wallet-status">Not Connected</span>
+                <button id="connect-wallet" class="btn btn-primary">Connect Wallet</button>
+            </div>
+        </div>
+
+        <div id="vote-tab" class="tab-content active">
+            <div class="section">
+                <h2>📊 Active Polls</h2>
+                <div id="polls-list" class="polls-grid">
+                    <div class="empty-state">
+                        <p>No active polls found</p>
+                        <p>Create a new poll to get started</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="create-tab" class="tab-content">
+            <div class="section">
+                <h2>🗳️ Create New Poll</h2>
+                <form id="create-poll-form" class="poll-form">
+                    <div class="form-group">
+                        <label for="poll-title">Poll Title</label>
+                        <input type="text" id="poll-title" maxlength="100" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="poll-description">Description</label>
+                        <textarea id="poll-description" maxlength="500" rows="3"></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Options</label>
+                        <div id="options-container">
+                            <div class="option-input">
+                                <input type="text" class="option" placeholder="Option 1" maxlength="50" required>
+                                <button type="button" class="btn-remove" onclick="removeOption(this)">✕</button>
+                            </div>
+                            <div class="option-input">
+                                <input type="text" class="option" placeholder="Option 2" maxlength="50" required>
+                                <button type="button" class="btn-remove" onclick="removeOption(this)">✕</button>
+                            </div>
+                        </div>
+                        <button type="button" id="add-option" class="btn btn-secondary">+ Add Option</button>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="poll-duration">Duration (blocks)</label>
+                        <input type="number" id="poll-duration" min="1" value="1440" required>
+                        <small>Approximately 1440 blocks = 1 day</small>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary">Create Poll</button>
+                </form>
+            </div>
+        </div>
+
+        <div id="results-tab" class="tab-content">
+            <div class="section">
+                <h2>📈 Poll Results</h2>
+                <div class="form-group">
+                    <label for="results-poll-id">Poll ID</label>
+                    <input type="number" id="results-poll-id" min="1" placeholder="Enter poll ID">
+                    <button id="load-results" class="btn btn-secondary">Load Results</button>
+                </div>
+                <div id="results-container" class="results-display">
+                    <div class="empty-state">
+                        <p>Enter a poll ID to view results</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="register-tab" class="tab-content">
+            <div class="section">
+                <h2>👤 Voter Registration</h2>
+                <div class="registration-info">
+                    <p>Register as a voter to participate in polls</p>
+                    <div id="registration-status" class="status-info">
+                        <span id="reg-status-text">Check registration status</span>
+                    </div>
+                    <button id="register-voter" class="btn btn-primary">Register as Voter</button>
+                    <button id="check-registration" class="btn btn-secondary">Check Status</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="vote-modal" class="modal">
+            <div class="modal-content">
+                <span class="close">&times;</span>
+                <h3 id="modal-poll-title"></h3>
+                <p id="modal-poll-description"></p>
+                <div id="modal-options" class="vote-options"></div>
+                <div class="vote-type-selector">
+                    <label>
+                        <input type="radio" name="vote-type" value="simple" checked>
+                        Simple Vote (Less Anonymous)
+                    </label>
+                    <label>
+                        <input type="radio" name="vote-type" value="anonymous">
+                        Anonymous Vote (More Private)
+                    </label>
+                </div>
+                <button id="submit-vote" class="btn btn-primary">Submit Vote</button>
+            </div>
+        </div>
+
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p>Processing transaction...</p>
+        </div>
+
+        <div id="toast" class="toast"></div>
+    </div>
+
+    <script src="https://unpkg.com/@stacks/connect@20.0.0/dist/umd/index.js"></script>
+    <script src="https://unpkg.com/@stacks/transactions@4.0.0/dist/umd/index.js"></script>
+    <script src="https://unpkg.com/@stacks/network@4.0.0/dist/umd/index.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
