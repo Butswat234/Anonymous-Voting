@@ -13,6 +13,9 @@
 (define-constant ERR-POLL-ACTIVE (err u106))
 (define-constant ERR-INVALID-DURATION (err u107))
 (define-constant ERR-INVALID-TITLE (err u108))
+(define-constant ERR-DELEGATION-NOT-FOUND (err u109))
+(define-constant ERR-SELF-DELEGATION (err u110))
+(define-constant ERR-ALREADY-DELEGATED (err u111))
 
 ;; Contract owner
 (define-constant CONTRACT-OWNER tx-sender)
@@ -20,6 +23,7 @@
 ;; Data variables
 (define-data-var poll-counter uint u0)
 (define-data-var total-votes uint u0)
+(define-data-var current-poll-id uint u0)
 
 ;; Poll structure
 (define-map polls
@@ -54,6 +58,12 @@
 (define-map registered-voters
   principal
   {is-registered: bool, registration-block: uint}
+)
+
+;; Vote delegation mapping
+(define-map vote-delegations
+  {delegator: principal, poll-id: uint}
+  {delegate: principal, delegation-block: uint}
 )
 
 ;; Create a new poll
@@ -181,6 +191,81 @@
   )
 )
 
+;; Delegate vote to another registered voter
+(define-public (delegate-vote (poll-id uint) (delegate principal))
+  (let (
+    (poll-data (unwrap! (map-get? polls poll-id) ERR-POLL-NOT-FOUND))
+    (voter-data (default-to {is-registered: false, registration-block: u0} (map-get? registered-voters tx-sender)))
+    (delegate-data (default-to {is-registered: false, registration-block: u0} (map-get? registered-voters delegate)))
+    (existing-delegation (map-get? vote-delegations {delegator: tx-sender, poll-id: poll-id}))
+  )
+    (asserts! (get is-registered voter-data) ERR-UNAUTHORIZED)
+    (asserts! (get is-registered delegate-data) ERR-UNAUTHORIZED)
+    (asserts! (not (is-eq tx-sender delegate)) ERR-SELF-DELEGATION)
+    (asserts! (get is-active poll-data) ERR-POLL-ENDED)
+    (asserts! (>= burn-block-height (get start-block poll-data)) ERR-POLL-NOT-STARTED)
+    (asserts! (< burn-block-height (get end-block poll-data)) ERR-POLL-ENDED)
+    (asserts! (is-none existing-delegation) ERR-ALREADY-DELEGATED)
+    
+    (map-set vote-delegations {delegator: tx-sender, poll-id: poll-id} {
+      delegate: delegate,
+      delegation-block: burn-block-height
+    })
+    
+    (ok true)
+  )
+)
+
+;; Vote on behalf of delegators
+(define-public (cast-delegated-vote 
+  (poll-id uint) 
+  (option-index uint)
+  (delegators (list 100 principal)))
+  (let (
+    (poll-data (unwrap! (map-get? polls poll-id) ERR-POLL-NOT-FOUND))
+    (voter-data (default-to {is-registered: false, registration-block: u0} (map-get? registered-voters tx-sender)))
+    (options-list (get options poll-data))
+  )
+    (asserts! (get is-registered voter-data) ERR-UNAUTHORIZED)
+    (asserts! (get is-active poll-data) ERR-POLL-ENDED)
+    (asserts! (>= burn-block-height (get start-block poll-data)) ERR-POLL-NOT-STARTED)
+    (asserts! (< burn-block-height (get end-block poll-data)) ERR-POLL-ENDED)
+    (asserts! (< option-index (len options-list)) ERR-INVALID-OPTION)
+    
+    (var-set current-poll-id poll-id)
+    (let (
+      (valid-delegations (filter validate-delegation-for-poll delegators))
+      (delegation-count (len valid-delegations))
+      (current-votes (get option-votes poll-data))
+      (total-poll-votes (get total-votes poll-data))
+    )
+      (map-set polls poll-id (merge poll-data {
+        option-votes: (increment-votes-by-amount current-votes option-index delegation-count),
+        total-votes: (+ total-poll-votes delegation-count)
+      }))
+      
+      (var-set total-votes (+ (var-get total-votes) delegation-count))
+      (fold mark-delegator-as-voted valid-delegations poll-id)
+      (ok delegation-count)
+    )
+  )
+)
+
+;; Remove delegation
+(define-public (remove-delegation (poll-id uint))
+  (let (
+    (poll-data (unwrap! (map-get? polls poll-id) ERR-POLL-NOT-FOUND))
+    (delegation (map-get? vote-delegations {delegator: tx-sender, poll-id: poll-id}))
+  )
+    (asserts! (is-some delegation) ERR-DELEGATION-NOT-FOUND)
+    (asserts! (get is-active poll-data) ERR-POLL-ENDED)
+    (asserts! (< burn-block-height (get end-block poll-data)) ERR-POLL-ENDED)
+    
+    (map-delete vote-delegations {delegator: tx-sender, poll-id: poll-id})
+    (ok true)
+  )
+)
+
 ;; End poll (only creator or contract owner)
 (define-public (end-poll (poll-id uint))
   (let (
@@ -236,6 +321,16 @@
   )
 )
 
+;; Get delegation info for a voter in a poll
+(define-read-only (get-delegation (poll-id uint) (delegator principal))
+  (map-get? vote-delegations {delegator: delegator, poll-id: poll-id})
+)
+
+;; Check if voter has delegated their vote
+(define-read-only (has-delegated (poll-id uint) (voter principal))
+  (is-some (map-get? vote-delegations {delegator: voter, poll-id: poll-id}))
+)
+
 ;; Get total poll count
 (define-read-only (get-poll-count)
   (var-get poll-counter)
@@ -280,8 +375,56 @@
   )
 )
 
+(define-private (increment-votes-by-amount (votes (list 10 uint)) (target-index uint) (amount uint))
+  (let ((v0 (default-to u0 (element-at votes u0)))
+        (v1 (default-to u0 (element-at votes u1)))
+        (v2 (default-to u0 (element-at votes u2)))
+        (v3 (default-to u0 (element-at votes u3)))
+        (v4 (default-to u0 (element-at votes u4)))
+        (v5 (default-to u0 (element-at votes u5)))
+        (v6 (default-to u0 (element-at votes u6)))
+        (v7 (default-to u0 (element-at votes u7)))
+        (v8 (default-to u0 (element-at votes u8)))
+        (v9 (default-to u0 (element-at votes u9))))
+    (if (is-eq target-index u0) (list (+ v0 amount) v1 v2 v3 v4 v5 v6 v7 v8 v9)
+    (if (is-eq target-index u1) (list v0 (+ v1 amount) v2 v3 v4 v5 v6 v7 v8 v9)
+    (if (is-eq target-index u2) (list v0 v1 (+ v2 amount) v3 v4 v5 v6 v7 v8 v9)
+    (if (is-eq target-index u3) (list v0 v1 v2 (+ v3 amount) v4 v5 v6 v7 v8 v9)
+    (if (is-eq target-index u4) (list v0 v1 v2 v3 (+ v4 amount) v5 v6 v7 v8 v9)
+    (if (is-eq target-index u5) (list v0 v1 v2 v3 v4 (+ v5 amount) v6 v7 v8 v9)
+    (if (is-eq target-index u6) (list v0 v1 v2 v3 v4 v5 (+ v6 amount) v7 v8 v9)
+    (if (is-eq target-index u7) (list v0 v1 v2 v3 v4 v5 v6 (+ v7 amount) v8 v9)
+    (if (is-eq target-index u8) (list v0 v1 v2 v3 v4 v5 v6 v7 (+ v8 amount) v9)
+    (if (is-eq target-index u9) (list v0 v1 v2 v3 v4 v5 v6 v7 v8 (+ v9 amount))
+    votes))))))))))
+  )
+)
+
+(define-private (validate-delegation-for-poll (delegator principal))
+  (let (
+    (delegation (map-get? vote-delegations {delegator: delegator, poll-id: (var-get current-poll-id)}))
+    (voter-key (hash160 (unwrap-panic (to-consensus-buff? delegator))))
+  )
+    (and
+      (is-some delegation)
+      (is-eq tx-sender (get delegate (unwrap-panic delegation)))
+      (is-none (map-get? vote-nullifiers {poll-id: (var-get current-poll-id), nullifier: voter-key}))
+    )
+  )
+)
+
+(define-private (mark-delegator-as-voted (delegator principal) (poll-id uint))
+  (let (
+    (voter-key (hash160 (unwrap-panic (to-consensus-buff? delegator))))
+  )
+    (map-set vote-nullifiers {poll-id: poll-id, nullifier: voter-key} true)
+    poll-id
+  )
+)
+
 ;; Initialize contract
 (begin
   (var-set poll-counter u0)
   (var-set total-votes u0)
+  (var-set current-poll-id u0)
 )
