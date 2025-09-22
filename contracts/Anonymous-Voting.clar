@@ -16,6 +16,7 @@
 (define-constant ERR-DELEGATION-NOT-FOUND (err u109))
 (define-constant ERR-SELF-DELEGATION (err u110))
 (define-constant ERR-ALREADY-DELEGATED (err u111))
+(define-constant ERR-INVALID-CATEGORY (err u112))
 
 ;; Contract owner
 (define-constant CONTRACT-OWNER tx-sender)
@@ -24,6 +25,7 @@
 (define-data-var poll-counter uint u0)
 (define-data-var total-votes uint u0)
 (define-data-var current-poll-id uint u0)
+(define-data-var category-counter uint u0)
 
 ;; Poll structure
 (define-map polls
@@ -38,7 +40,8 @@
     option-votes: (list 10 uint),
     total-votes: uint,
     is-active: bool,
-    anonymous-key: (buff 32)
+    anonymous-key: (buff 32),
+    category: (string-ascii 30)
   }
 )
 
@@ -66,21 +69,35 @@
   {delegate: principal, delegation-block: uint}
 )
 
+(define-map poll-categories
+  (string-ascii 30)
+  {count: uint, created-block: uint}
+)
+
+(define-map polls-by-category
+  {category: (string-ascii 30), index: uint}
+  uint
+)
+
 ;; Create a new poll
 (define-public (create-poll 
   (title (string-ascii 100))
   (description (string-ascii 500))
   (options (list 10 (string-ascii 50)))
-  (duration uint))
+  (duration uint)
+  (category (string-ascii 30)))
   (let (
     (poll-id (+ (var-get poll-counter) u1))
     (start-block burn-block-height)
     (end-block (+ burn-block-height duration))
     (anonymous-key (hash160 (unwrap-panic (to-consensus-buff? tx-sender))))
+    (category-data (default-to {count: u0, created-block: u0} (map-get? poll-categories category)))
+    (category-count (get count category-data))
   )
     (asserts! (> (len title) u0) ERR-INVALID-TITLE)
     (asserts! (> duration u0) ERR-INVALID-DURATION)
     (asserts! (> (len options) u0) ERR-INVALID-OPTION)
+    (asserts! (> (len category) u0) ERR-INVALID-CATEGORY)
     
     (map-set polls poll-id {
       title: title,
@@ -92,8 +109,16 @@
       option-votes: (map get-zero options),
       total-votes: u0,
       is-active: true,
-      anonymous-key: anonymous-key
+      anonymous-key: anonymous-key,
+      category: category
     })
+    
+    (map-set poll-categories category {
+      count: (+ category-count u1),
+      created-block: (if (is-eq category-count u0) burn-block-height (get created-block category-data))
+    })
+    
+    (map-set polls-by-category {category: category, index: category-count} poll-id)
     
     (var-set poll-counter poll-id)
     (ok poll-id)
@@ -336,6 +361,54 @@
   (var-get poll-counter)
 )
 
+(define-read-only (get-polls-by-category (category (string-ascii 30)))
+  (let (
+    (category-data (map-get? poll-categories category))
+  )
+    (match category-data
+      data (ok {category: category, count: (get count data), created-block: (get created-block data)})
+      ERR-INVALID-CATEGORY
+    )
+  )
+)
+
+(define-read-only (get-poll-id-by-category (category (string-ascii 30)) (index uint))
+  (map-get? polls-by-category {category: category, index: index})
+)
+
+(define-read-only (list-polls-in-category (category (string-ascii 30)) (start-index uint) (limit uint))
+  (let (
+    (category-data (map-get? poll-categories category))
+  )
+    (match category-data
+      data (let (
+        (total-count (get count data))
+        (end-index (if (> (+ start-index limit) total-count) total-count (+ start-index limit)))
+        (poll-ids (build-poll-list category start-index end-index))
+      )
+        (ok {
+          category: category,
+          total-count: total-count,
+          start-index: start-index,
+          polls: poll-ids
+        })
+      )
+      ERR-INVALID-CATEGORY
+    )
+  )
+)
+
+(define-read-only (get-all-categories)
+  (ok {
+    total-categories: (var-get category-counter),
+    governance: (default-to {count: u0, created-block: u0} (map-get? poll-categories "governance")),
+    community: (default-to {count: u0, created-block: u0} (map-get? poll-categories "community")),
+    technical: (default-to {count: u0, created-block: u0} (map-get? poll-categories "technical")),
+    proposal: (default-to {count: u0, created-block: u0} (map-get? poll-categories "proposal")),
+    general: (default-to {count: u0, created-block: u0} (map-get? poll-categories "general"))
+  })
+)
+
 ;; Get contract stats
 (define-read-only (get-contract-stats)
   {
@@ -422,9 +495,43 @@
   )
 )
 
+(define-private (build-poll-list (category (string-ascii 30)) (start-index uint) (end-index uint))
+  (let (
+    (result (list))
+  )
+    (if (>= start-index end-index)
+      result
+      (let (
+        (poll-id-0 (map-get? polls-by-category {category: category, index: start-index}))
+        (poll-id-1 (map-get? polls-by-category {category: category, index: (+ start-index u1)}))
+        (poll-id-2 (map-get? polls-by-category {category: category, index: (+ start-index u2)}))
+        (poll-id-3 (map-get? polls-by-category {category: category, index: (+ start-index u3)}))
+        (poll-id-4 (map-get? polls-by-category {category: category, index: (+ start-index u4)}))
+      )
+        (unwrap-panic (as-max-len? 
+          (concat 
+            (if (and (is-some poll-id-0) (< start-index end-index)) (list (unwrap-panic poll-id-0)) (list))
+            (concat 
+              (if (and (is-some poll-id-1) (< (+ start-index u1) end-index)) (list (unwrap-panic poll-id-1)) (list))
+              (concat 
+                (if (and (is-some poll-id-2) (< (+ start-index u2) end-index)) (list (unwrap-panic poll-id-2)) (list))
+                (concat 
+                  (if (and (is-some poll-id-3) (< (+ start-index u3) end-index)) (list (unwrap-panic poll-id-3)) (list))
+                  (if (and (is-some poll-id-4) (< (+ start-index u4) end-index)) (list (unwrap-panic poll-id-4)) (list))
+                )
+              )
+            )
+          )
+        u100))
+      )
+    )
+  )
+)
+
 ;; Initialize contract
 (begin
   (var-set poll-counter u0)
   (var-set total-votes u0)
   (var-set current-poll-id u0)
+  (var-set category-counter u0)
 )
