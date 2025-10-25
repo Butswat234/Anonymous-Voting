@@ -17,6 +17,10 @@
 (define-constant ERR-SELF-DELEGATION (err u110))
 (define-constant ERR-ALREADY-DELEGATED (err u111))
 (define-constant ERR-INVALID-CATEGORY (err u112))
+(define-constant ERR-INSUFFICIENT-CREDITS (err u113))
+(define-constant ERR-QUADRATIC-NOT-ENABLED (err u114))
+(define-constant ERR-INVALID-CREDITS (err u115))
+(define-constant ERR-CREDITS-ALREADY-ALLOCATED (err u116))
 
 ;; Contract owner
 (define-constant CONTRACT-OWNER tx-sender)
@@ -26,6 +30,7 @@
 (define-data-var total-votes uint u0)
 (define-data-var current-poll-id uint u0)
 (define-data-var category-counter uint u0)
+(define-data-var total-quadratic-polls uint u0)
 
 ;; Poll structure
 (define-map polls
@@ -77,6 +82,33 @@
 (define-map polls-by-category
   {category: (string-ascii 30), index: uint}
   uint
+)
+
+(define-map quadratic-polls
+  uint
+  {
+    is-quadratic: bool,
+    initial-credits-per-voter: uint,
+    total-credits-allocated: uint,
+    total-votes-cast: uint
+  }
+)
+
+(define-map voter-credits
+  {poll-id: uint, voter: principal}
+  {
+    total-credits: uint,
+    spent-credits: uint,
+    remaining-credits: uint
+  }
+)
+
+(define-map quadratic-vote-allocations
+  {poll-id: uint, voter: principal, option-index: uint}
+  {
+    votes-cast: uint,
+    credits-spent: uint
+  }
 )
 
 ;; Create a new poll
@@ -526,6 +558,216 @@
       )
     )
   )
+)
+
+(define-private (sqrt (n uint))
+  (if (<= n u1)
+    n
+    (let (
+      (x0 (/ n u2))
+      (x1 (/ (+ x0 (/ n x0)) u2))
+      (x2 (/ (+ x1 (/ n x1)) u2))
+      (x3 (/ (+ x2 (/ n x2)) u2))
+      (x4 (/ (+ x3 (/ n x3)) u2))
+      (x5 (/ (+ x4 (/ n x4)) u2))
+    )
+      x5
+    )
+  )
+)
+
+(define-private (calculate-quadratic-cost (votes uint))
+  (* votes votes)
+)
+
+(define-public (create-quadratic-poll
+  (title (string-ascii 100))
+  (description (string-ascii 500))
+  (options (list 10 (string-ascii 50)))
+  (duration uint)
+  (category (string-ascii 30))
+  (credits-per-voter uint))
+  (let (
+    (poll-id (+ (var-get poll-counter) u1))
+    (start-block burn-block-height)
+    (end-block (+ burn-block-height duration))
+    (anonymous-key (hash160 (unwrap-panic (to-consensus-buff? tx-sender))))
+    (category-data (default-to {count: u0, created-block: u0} (map-get? poll-categories category)))
+    (category-count (get count category-data))
+  )
+    (asserts! (> (len title) u0) ERR-INVALID-TITLE)
+    (asserts! (> duration u0) ERR-INVALID-DURATION)
+    (asserts! (> (len options) u0) ERR-INVALID-OPTION)
+    (asserts! (> (len category) u0) ERR-INVALID-CATEGORY)
+    (asserts! (> credits-per-voter u0) ERR-INVALID-CREDITS)
+    
+    (map-set polls poll-id {
+      title: title,
+      description: description,
+      creator: tx-sender,
+      start-block: burn-block-height,
+      end-block: end-block,
+      options: options,
+      option-votes: (map get-zero options),
+      total-votes: u0,
+      is-active: true,
+      anonymous-key: anonymous-key,
+      category: category
+    })
+    
+    (map-set quadratic-polls poll-id {
+      is-quadratic: true,
+      initial-credits-per-voter: credits-per-voter,
+      total-credits-allocated: u0,
+      total-votes-cast: u0
+    })
+    
+    (map-set poll-categories category {
+      count: (+ category-count u1),
+      created-block: (if (is-eq category-count u0) burn-block-height (get created-block category-data))
+    })
+    
+    (map-set polls-by-category {category: category, index: category-count} poll-id)
+    
+    (var-set poll-counter poll-id)
+    (var-set total-quadratic-polls (+ (var-get total-quadratic-polls) u1))
+    (ok poll-id)
+  )
+)
+
+(define-public (allocate-voting-credits (poll-id uint))
+  (let (
+    (poll-data (unwrap! (map-get? polls poll-id) ERR-POLL-NOT-FOUND))
+    (quadratic-data (unwrap! (map-get? quadratic-polls poll-id) ERR-QUADRATIC-NOT-ENABLED))
+    (voter-data (default-to {is-registered: false, registration-block: u0} (map-get? registered-voters tx-sender)))
+    (existing-credits (map-get? voter-credits {poll-id: poll-id, voter: tx-sender}))
+    (initial-credits (get initial-credits-per-voter quadratic-data))
+  )
+    (asserts! (get is-registered voter-data) ERR-UNAUTHORIZED)
+    (asserts! (get is-active poll-data) ERR-POLL-ENDED)
+    (asserts! (>= burn-block-height (get start-block poll-data)) ERR-POLL-NOT-STARTED)
+    (asserts! (< burn-block-height (get end-block poll-data)) ERR-POLL-ENDED)
+    (asserts! (is-none existing-credits) ERR-CREDITS-ALREADY-ALLOCATED)
+    
+    (map-set voter-credits
+      {poll-id: poll-id, voter: tx-sender}
+      {
+        total-credits: initial-credits,
+        spent-credits: u0,
+        remaining-credits: initial-credits
+      }
+    )
+    
+    (map-set quadratic-polls poll-id
+      (merge quadratic-data {
+        total-credits-allocated: (+ (get total-credits-allocated quadratic-data) initial-credits)
+      })
+    )
+    
+    (ok initial-credits)
+  )
+)
+
+(define-public (cast-quadratic-vote
+  (poll-id uint)
+  (option-index uint)
+  (votes-to-cast uint))
+  (let (
+    (poll-data (unwrap! (map-get? polls poll-id) ERR-POLL-NOT-FOUND))
+    (quadratic-data (unwrap! (map-get? quadratic-polls poll-id) ERR-QUADRATIC-NOT-ENABLED))
+    (voter-data (default-to {is-registered: false, registration-block: u0} (map-get? registered-voters tx-sender)))
+    (credits-data (unwrap! (map-get? voter-credits {poll-id: poll-id, voter: tx-sender}) ERR-INSUFFICIENT-CREDITS))
+    (existing-allocation (default-to {votes-cast: u0, credits-spent: u0} 
+                          (map-get? quadratic-vote-allocations {poll-id: poll-id, voter: tx-sender, option-index: option-index})))
+    (current-votes (get option-votes poll-data))
+    (total-poll-votes (get total-votes poll-data))
+    (options-list (get options poll-data))
+    (new-total-votes (+ (get votes-cast existing-allocation) votes-to-cast))
+    (credits-needed (calculate-quadratic-cost new-total-votes))
+    (additional-credits (- credits-needed (get credits-spent existing-allocation)))
+  )
+    (asserts! (get is-registered voter-data) ERR-UNAUTHORIZED)
+    (asserts! (get is-active poll-data) ERR-POLL-ENDED)
+    (asserts! (>= burn-block-height (get start-block poll-data)) ERR-POLL-NOT-STARTED)
+    (asserts! (< burn-block-height (get end-block poll-data)) ERR-POLL-ENDED)
+    (asserts! (< option-index (len options-list)) ERR-INVALID-OPTION)
+    (asserts! (> votes-to-cast u0) ERR-INVALID-OPTION)
+    (asserts! (<= additional-credits (get remaining-credits credits-data)) ERR-INSUFFICIENT-CREDITS)
+    
+    (map-set voter-credits
+      {poll-id: poll-id, voter: tx-sender}
+      {
+        total-credits: (get total-credits credits-data),
+        spent-credits: (+ (get spent-credits credits-data) additional-credits),
+        remaining-credits: (- (get remaining-credits credits-data) additional-credits)
+      }
+    )
+    
+    (map-set quadratic-vote-allocations
+      {poll-id: poll-id, voter: tx-sender, option-index: option-index}
+      {
+        votes-cast: new-total-votes,
+        credits-spent: credits-needed
+      }
+    )
+    
+    (map-set polls poll-id (merge poll-data {
+      option-votes: (increment-votes-by-amount current-votes option-index votes-to-cast),
+      total-votes: (+ total-poll-votes votes-to-cast)
+    }))
+    
+    (map-set quadratic-polls poll-id
+      (merge quadratic-data {
+        total-votes-cast: (+ (get total-votes-cast quadratic-data) votes-to-cast)
+      })
+    )
+    
+    (var-set total-votes (+ (var-get total-votes) votes-to-cast))
+    (ok {votes-cast: new-total-votes, credits-spent: credits-needed, remaining-credits: (- (get remaining-credits credits-data) additional-credits)})
+  )
+)
+
+(define-read-only (get-quadratic-poll-info (poll-id uint))
+  (map-get? quadratic-polls poll-id)
+)
+
+(define-read-only (get-voter-credits (poll-id uint) (voter principal))
+  (map-get? voter-credits {poll-id: poll-id, voter: voter})
+)
+
+(define-read-only (get-voter-allocation (poll-id uint) (voter principal) (option-index uint))
+  (map-get? quadratic-vote-allocations {poll-id: poll-id, voter: voter, option-index: option-index})
+)
+
+(define-read-only (is-quadratic-poll (poll-id uint))
+  (match (map-get? quadratic-polls poll-id)
+    data (get is-quadratic data)
+    false
+  )
+)
+
+(define-read-only (calculate-vote-cost (current-votes uint) (additional-votes uint))
+  (let (
+    (new-total (+ current-votes additional-votes))
+    (new-cost (calculate-quadratic-cost new-total))
+    (old-cost (calculate-quadratic-cost current-votes))
+  )
+    (ok {
+      additional-votes: additional-votes,
+      current-votes: current-votes,
+      new-total-votes: new-total,
+      additional-credits-needed: (- new-cost old-cost),
+      total-credits-needed: new-cost
+    })
+  )
+)
+
+(define-read-only (get-quadratic-stats)
+  {
+    total-quadratic-polls: (var-get total-quadratic-polls),
+    total-polls: (var-get poll-counter),
+    total-votes: (var-get total-votes)
+  }
 )
 
 ;; Initialize contract
