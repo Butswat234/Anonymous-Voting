@@ -21,6 +21,10 @@
 (define-constant ERR-QUADRATIC-NOT-ENABLED (err u114))
 (define-constant ERR-INVALID-CREDITS (err u115))
 (define-constant ERR-CREDITS-ALREADY-ALLOCATED (err u116))
+(define-constant ERR-EXTENSION-TOO-SHORT (err u117))
+(define-constant ERR-MAX-EXTENSIONS-REACHED (err u118))
+
+(define-constant MAX-POLL-EXTENSIONS u3)
 
 ;; Contract owner
 (define-constant CONTRACT-OWNER tx-sender)
@@ -108,6 +112,15 @@
   {
     votes-cast: uint,
     credits-spent: uint
+  }
+)
+
+(define-map poll-extensions
+  uint
+  {
+    extension-count: uint,
+    original-end-block: uint,
+    last-extended-block: uint
   }
 )
 
@@ -245,6 +258,53 @@
     
     (var-set total-votes (+ (var-get total-votes) u1))
     (ok true)
+  )
+)
+
+(define-public (extend-poll (poll-id uint) (additional-blocks uint))
+  (let (
+    (poll-data (unwrap! (map-get? polls poll-id) ERR-POLL-NOT-FOUND))
+    (extension-data (default-to 
+      {extension-count: u0, original-end-block: (get end-block poll-data), last-extended-block: u0} 
+      (map-get? poll-extensions poll-id)))
+    (current-end-block (get end-block poll-data))
+    (new-end-block (+ current-end-block additional-blocks))
+  )
+    (asserts! (is-eq tx-sender (get creator poll-data)) ERR-UNAUTHORIZED)
+    (asserts! (get is-active poll-data) ERR-POLL-ENDED)
+    (asserts! (< burn-block-height current-end-block) ERR-POLL-ENDED)
+    (asserts! (> additional-blocks u0) ERR-EXTENSION-TOO-SHORT)
+    (asserts! (< (get extension-count extension-data) MAX-POLL-EXTENSIONS) ERR-MAX-EXTENSIONS-REACHED)
+    
+    (map-set polls poll-id (merge poll-data {
+      end-block: new-end-block
+    }))
+    
+    (map-set poll-extensions poll-id {
+      extension-count: (+ (get extension-count extension-data) u1),
+      original-end-block: (get original-end-block extension-data),
+      last-extended-block: burn-block-height
+    })
+    
+    (ok {
+      poll-id: poll-id,
+      new-end-block: new-end-block,
+      extensions-used: (+ (get extension-count extension-data) u1),
+      extensions-remaining: (- MAX-POLL-EXTENSIONS (+ (get extension-count extension-data) u1))
+    })
+  )
+)
+
+(define-read-only (get-poll-extension-info (poll-id uint))
+  (match (map-get? poll-extensions poll-id)
+    data (some {
+      extension-count: (get extension-count data),
+      original-end-block: (get original-end-block data),
+      last-extended-block: (get last-extended-block data),
+      max-extensions: MAX-POLL-EXTENSIONS,
+      can-extend: (< (get extension-count data) MAX-POLL-EXTENSIONS)
+    })
+    none
   )
 )
 
